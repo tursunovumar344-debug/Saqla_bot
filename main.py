@@ -6,20 +6,23 @@ import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
+import yt_dlp
+
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message
+from aiogram.types import Message, FSInputFile
 from aiogram.filters import CommandStart
 from aiogram.enums import ChatAction
 
-import yt_dlp
 
-
-# ==============================
+# ==================================
 # SOZLAMALAR
-# ==============================
+# ==================================
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
+
+BOT_LINK = "https://t.me/SaqlaNovaBot"
+CAPTION = "📥 @SaqlaNovaBot"
 
 MAX_FILE_SIZE = 49 * 1024 * 1024
 MAX_DOWNLOADS = 2
@@ -35,7 +38,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN topilmadi! Render Environment Variables ni tekshiring.")
+    raise RuntimeError(
+        "BOT_TOKEN topilmadi! Render Environment Variables ni tekshiring."
+    )
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
@@ -43,9 +48,9 @@ dp = Dispatcher()
 download_semaphore = asyncio.Semaphore(MAX_DOWNLOADS)
 
 
-# ==============================
+# ==================================
 # HAVOLANI TEKSHIRISH
-# ==============================
+# ==================================
 
 ALLOWED_DOMAINS = [
     "youtube.com",
@@ -85,11 +90,12 @@ def find_url(text):
     return match.group(0).rstrip(".,!?)\"]'")
 
 
-# ==============================
+# ==================================
 # VIDEO YUKLASH
-# ==============================
+# ==================================
 
 def download_video(url, folder):
+
     options = {
         "format": "best[ext=mp4]/best",
         "outtmpl": str(folder / "%(title).80s.%(ext)s"),
@@ -105,16 +111,17 @@ def download_video(url, folder):
     }
 
     with yt_dlp.YoutubeDL(options) as ydl:
+
         info = ydl.extract_info(url, download=True)
 
         if not info:
             raise Exception("Video ma'lumotini olish imkonsiz.")
 
         filename = ydl.prepare_filename(info)
-
         file_path = Path(filename)
 
         if not file_path.exists():
+
             possible_files = list(folder.glob("*"))
 
             if not possible_files:
@@ -125,22 +132,23 @@ def download_video(url, folder):
         return file_path, info.get("title", "Video")
 
 
-# ==============================
+# ==================================
 # START
-# ==============================
+# ==================================
 
 @dp.message(CommandStart())
 async def start_handler(message: Message):
+
     await message.answer(
         "SAQLA BOT ga xush kelibsiz!\n\n"
-        "Instagram, TikTok yoki YouTube video havolasini yuboring.\n\n"
+        "Instagram, TikTok yoki YouTube havolasini yuboring.\n\n"
         "Bot videoni yuklab sizga yuboradi."
     )
 
 
-# ==============================
+# ==================================
 # VIDEO QABUL QILISH
-# ==============================
+# ==================================
 
 @dp.message(F.text)
 async def video_handler(message: Message):
@@ -148,26 +156,27 @@ async def video_handler(message: Message):
     url = find_url(message.text)
 
     if not url:
+
         await message.answer(
             "Iltimos, Instagram, TikTok yoki YouTube havolasini yuboring."
         )
         return
 
     if not is_valid_url(url):
-        await message.answer("Bu havola qo'llab-quvvatlanmaydi.")
+
+        await message.answer(
+            "Bu havola qo'llab-quvvatlanmaydi."
+        )
         return
 
     status = await message.answer(
-        "Havola qabul qilindi.\nVideo yuklanmoqda..."
+        "Havola qabul qilindi.\n"
+        "Video yuklanmoqda..."
     )
 
     async with download_semaphore:
 
         try:
-            await bot.send_chat_action(
-                chat_id=message.chat.id,
-                action=ChatAction.TYPING
-            )
 
             with tempfile.TemporaryDirectory(
                 dir=DOWNLOAD_FOLDER
@@ -182,29 +191,24 @@ async def video_handler(message: Message):
                 )
 
                 if not file_path.exists():
+
                     raise Exception("Video fayli topilmadi.")
 
                 file_size = file_path.stat().st_size
 
                 if file_size > MAX_FILE_SIZE:
+
                     await status.edit_text(
-                        "Video hajmi 49 MB dan katta.\n"
-                        "Kichikroq video havolasini yuboring."
+                        "Video hajmi 49 MB dan katta."
                     )
                     return
 
                 await status.edit_text(
-                    "Video tayyor!\nTelegramga yuborilmoqda..."
-                )
-
-                await bot.send_chat_action(
-                    chat_id=message.chat.id,
-                    action=ChatAction.UPLOAD_VIDEO
+                    "Video tayyor!\n"
+                    "Telegramga yuborilmoqda..."
                 )
 
                 if file_path.suffix.lower() == ".mp4":
-
-                    from aiogram.types import FSInputFile
 
                     video = FSInputFile(
                         path=str(file_path),
@@ -213,12 +217,10 @@ async def video_handler(message: Message):
 
                     await message.answer_video(
                         video=video,
-                        caption="SAQLA BOT"
+                        caption=CAPTION
                     )
 
                 else:
-
-                    from aiogram.types import FSInputFile
 
                     document = FSInputFile(
                         path=str(file_path)
@@ -226,7 +228,7 @@ async def video_handler(message: Message):
 
                     await message.answer_document(
                         document=document,
-                        caption="SAQLA BOT"
+                        caption=CAPTION
                     )
 
                 await status.delete()
@@ -241,19 +243,22 @@ async def video_handler(message: Message):
                 error_text = error_text[:300]
 
             try:
+
                 await status.edit_text(
                     "Videoni yuklashda xatolik yuz berdi.\n\n"
                     "Sabab: " + error_text
                 )
+
             except Exception:
+
                 await message.answer(
                     "Videoni yuklashda xatolik yuz berdi."
                 )
 
 
-# ==============================
+# ==================================
 # RENDER HEALTH SERVER
-# ==============================
+# ==================================
 
 async def health_server():
 
@@ -280,15 +285,18 @@ async def health_server():
         PORT
     )
 
-    logger.info("Health server PORT %s da ishga tushdi", PORT)
+    logger.info(
+        "Health server PORT %s da ishga tushdi",
+        PORT
+    )
 
     async with server:
         await server.serve_forever()
 
 
-# ==============================
+# ==================================
 # BOTNI ISHGA TUSHIRISH
-# ==============================
+# ==================================
 
 async def main():
 
@@ -303,7 +311,9 @@ async def main():
 if __name__ == "__main__":
 
     try:
+
         asyncio.run(main())
 
     except KeyboardInterrupt:
+
         logger.info("Bot to'xtatildi.")
