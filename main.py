@@ -17,7 +17,7 @@ SAQLA BOT CONFIGURATION
 ==============================
 
 TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.getenv(“PORT”, “10000”))
+PORT = int(os.getenv("PORT", "10000"))
 
 MAX_SIZE = 49 * 1024 * 1024
 MAX_CONCURRENT_DOWNLOADS = 3
