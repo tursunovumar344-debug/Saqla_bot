@@ -2,228 +2,308 @@ import os
 import re
 import asyncio
 import tempfile
+import logging
 from pathlib import Path
 from urllib.parse import urlparse
 
-import yt_dlp
 from aiogram import Bot, Dispatcher, F
-from aiogram.filters import CommandStart
 from aiogram.types import Message
+from aiogram.filters import CommandStart
+from aiogram.enums import ChatAction
 
-==============================
+import yt_dlp
 
-SAQLA BOT CONFIGURATION
 
-==============================
+# ==============================
+# SOZLAMALAR
+# ==============================
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.getenv("PORT", "10000"))
 
-MAX_SIZE = 49 * 1024 * 1024
-MAX_CONCURRENT_DOWNLOADS = 3
+MAX_FILE_SIZE = 49 * 1024 * 1024
+MAX_DOWNLOADS = 2
+
+DOWNLOAD_FOLDER = Path(tempfile.gettempdir()) / "saqlabot"
+DOWNLOAD_FOLDER.mkdir(exist_ok=True)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
+
+logger = logging.getLogger(__name__)
 
 if not TOKEN:
-raise RuntimeError(“BOT_TOKEN topilmadi!”)
+    raise RuntimeError("BOT_TOKEN topilmadi! Render Environment Variables ni tekshiring.")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-download_limit = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
+download_semaphore = asyncio.Semaphore(MAX_DOWNLOADS)
 
-ALLOWED_DOMAINS = {
-“instagram.com”,
-“www.instagram.com”,
-“tiktok.com”,
-“www.tiktok.com”,
-“vm.tiktok.com”,
-“youtube.com”,
-“www.youtube.com”,
-“m.youtube.com”,
-“youtu.be”,
-}
 
-==============================
+# ==============================
+# HAVOLANI TEKSHIRISH
+# ==============================
 
-LINK VALIDATION
+ALLOWED_DOMAINS = [
+    "youtube.com",
+    "youtu.be",
+    "instagram.com",
+    "tiktok.com"
+]
 
-==============================
 
-def get_video_link(text):
+def is_valid_url(url):
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
 
-match = re.search(r"https?://[^\s]+", text)
-if not match:
-    return None
-url = match.group(0).rstrip(".,!?)\"]}")
-try:
-    parsed = urlparse(url)
-    domain = parsed.hostname
-    if not domain:
+        if parsed.scheme not in ("http", "https"):
+            return False
+
+        for domain in ALLOWED_DOMAINS:
+            if host == domain or host.endswith("." + domain):
+                return True
+
+        return False
+
+    except Exception:
+        return False
+
+
+def find_url(text):
+    if not text:
         return None
-    domain = domain.lower()
-    if domain not in ALLOWED_DOMAINS:
+
+    match = re.search(r"https?://[^\s]+", text)
+
+    if not match:
         return None
-    return url
-except Exception:
-    return None
 
-==============================
+    return match.group(0).rstrip(".,!?)\"]'")
 
-VIDEO DOWNLOADER
 
-==============================
+# ==============================
+# VIDEO YUKLASH
+# ==============================
 
 def download_video(url, folder):
+    options = {
+        "format": "best[ext=mp4]/best",
+        "outtmpl": str(folder / "%(title).80s.%(ext)s"),
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "restrictfilenames": True,
+        "socket_timeout": 30,
+        "retries": 2,
+        "fragment_retries": 2,
+        "max_filesize": MAX_FILE_SIZE,
+        "overwrites": True
+    }
 
-output = os.path.join(folder, "video.%(ext)s")
-options = {
-    "format": "best[filesize<49M]/best",
-    "outtmpl": output,
-    "noplaylist": True,
-    "quiet": True,
-    "no_warnings": True,
-    "socket_timeout": 20,
-    "retries": 2,
-    "fragment_retries": 2,
-    "max_filesize": MAX_SIZE,
-    "merge_output_format": "mp4",
-}
-with yt_dlp.YoutubeDL(options) as downloader:
-    downloader.download([url])
-files = [
-    file for file in Path(folder).glob("video.*")
-    if file.is_file()
-]
-if not files:
-    raise Exception("Video topilmadi")
-video = max(files, key=lambda file: file.stat().st_size)
-if video.stat().st_size > MAX_SIZE:
-    raise Exception("Video hajmi juda katta")
-return video
+    with yt_dlp.YoutubeDL(options) as ydl:
+        info = ydl.extract_info(url, download=True)
 
-==============================
+        if not info:
+            raise Exception("Video ma'lumotini olish imkonsiz.")
 
-START COMMAND
+        filename = ydl.prepare_filename(info)
 
-==============================
+        file_path = Path(filename)
+
+        if not file_path.exists():
+            possible_files = list(folder.glob("*"))
+
+            if not possible_files:
+                raise Exception("Yuklangan fayl topilmadi.")
+
+            file_path = possible_files[0]
+
+        return file_path, info.get("title", "Video")
+
+
+# ==============================
+# START
+# ==============================
 
 @dp.message(CommandStart())
-async def start(message: Message):
+async def start_handler(message: Message):
+    await message.answer(
+        "SAQLA BOT ga xush kelibsiz!\n\n"
+        "Instagram, TikTok yoki YouTube video havolasini yuboring.\n\n"
+        "Bot videoni yuklab sizga yuboradi."
+    )
 
-await message.answer(
-    "🎬 SAQLA BOT\n"
-    "━━━━━━━━━━━━━━━━\n\n"
-    "Videolarni tez va oson saqlang!\n\n"
-    "📥 Instagram\n"
-    "📥 TikTok\n"
-    "📥 YouTube\n\n"
-    "Havolani yuboring — bot videoni "
-    "avtomatik tayyorlaydi.\n\n"
-    "⚡ SAQLA — tezkor video yuklash."
-)
 
-==============================
-
-VIDEO PROCESSING
-
-==============================
+# ==============================
+# VIDEO QABUL QILISH
+# ==============================
 
 @dp.message(F.text)
-async def receive_link(message: Message):
+async def video_handler(message: Message):
 
-url = get_video_link(message.text)
-if not url:
-    await message.answer(
-        "🔗 Iltimos, Instagram, TikTok "
-        "yoki YouTube havolasini yuboring."
+    url = find_url(message.text)
+
+    if not url:
+        await message.answer(
+            "Iltimos, Instagram, TikTok yoki YouTube havolasini yuboring."
+        )
+        return
+
+    if not is_valid_url(url):
+        await message.answer("Bu havola qo'llab-quvvatlanmaydi.")
+        return
+
+    status = await message.answer(
+        "Havola qabul qilindi.\nVideo yuklanmoqda..."
     )
-    return
-status = await message.answer(
-    "⏳ Video qabul qilindi.\n"
-    "Yuklash boshlanmoqda..."
-)
-async with download_limit:
-    try:
-        with tempfile.TemporaryDirectory() as folder:
-            loop = asyncio.get_running_loop()
-            video = await loop.run_in_executor(
-                None,
-                download_video,
-                url,
-                folder
+
+    async with download_semaphore:
+
+        try:
+            await bot.send_chat_action(
+                chat_id=message.chat.id,
+                action=ChatAction.TYPING
             )
-            await status.edit_text(
-                "📤 Video tayyor!\n"
-                "Telegramga yuborilmoqda..."
-            )
-            with open(video, "rb") as file:
-                await message.answer_video(
-                    video=file,
-                    caption="✅ SAQLA BOT"
+
+            with tempfile.TemporaryDirectory(
+                dir=DOWNLOAD_FOLDER
+            ) as temp_dir:
+
+                folder = Path(temp_dir)
+
+                file_path, title = await asyncio.to_thread(
+                    download_video,
+                    url,
+                    folder
                 )
-            await status.delete()
-    except Exception as error:
-        print("DOWNLOAD ERROR:", repr(error))
-        await status.edit_text(
-            "❌ Videoni yuklash amalga oshmadi.\n\n"
-            "Sabablari:\n"
-            "• Havola ishlamayapti.\n"
-            "• Video yopiq yoki mavjud emas.\n"
-            "• Platforma yuklashga ruxsat bermadi.\n"
-            "• Video hajmi juda katta.\n\n"
-            "Boshqa havola bilan urinib ko‘ring."
+
+                if not file_path.exists():
+                    raise Exception("Video fayli topilmadi.")
+
+                file_size = file_path.stat().st_size
+
+                if file_size > MAX_FILE_SIZE:
+                    await status.edit_text(
+                        "Video hajmi 49 MB dan katta.\n"
+                        "Kichikroq video havolasini yuboring."
+                    )
+                    return
+
+                await status.edit_text(
+                    "Video tayyor!\nTelegramga yuborilmoqda..."
+                )
+
+                await bot.send_chat_action(
+                    chat_id=message.chat.id,
+                    action=ChatAction.UPLOAD_VIDEO
+                )
+
+                if file_path.suffix.lower() == ".mp4":
+
+                    from aiogram.types import FSInputFile
+
+                    video = FSInputFile(
+                        path=str(file_path),
+                        filename="SAQLA_BOT.mp4"
+                    )
+
+                    await message.answer_video(
+                        video=video,
+                        caption="SAQLA BOT"
+                    )
+
+                else:
+
+                    from aiogram.types import FSInputFile
+
+                    document = FSInputFile(
+                        path=str(file_path)
+                    )
+
+                    await message.answer_document(
+                        document=document,
+                        caption="SAQLA BOT"
+                    )
+
+                await status.delete()
+
+        except Exception as error:
+
+            logger.exception("Video yuklashda xatolik")
+
+            error_text = str(error)
+
+            if len(error_text) > 300:
+                error_text = error_text[:300]
+
+            try:
+                await status.edit_text(
+                    "Videoni yuklashda xatolik yuz berdi.\n\n"
+                    "Sabab: " + error_text
+                )
+            except Exception:
+                await message.answer(
+                    "Videoni yuklashda xatolik yuz berdi."
+                )
+
+
+# ==============================
+# RENDER HEALTH SERVER
+# ==============================
+
+async def health_server():
+
+    async def handle_client(reader, writer):
+
+        response = (
+            "HTTP/1.1 200 OK\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: 16\r\n"
+            "Connection: close\r\n"
+            "\r\n"
+            "SAQLA BOT ACTIVE"
         )
 
-==============================
+        writer.write(response.encode("utf-8"))
+        await writer.drain()
 
-RENDER HEALTH SERVER
+        writer.close()
+        await writer.wait_closed()
 
-==============================
-
-async def handle_http(reader, writer):
-
-try:
-    await reader.read(1024)
-    response = (
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/plain\r\n"
-        "Content-Length: 16\r\n"
-        "Connection: close\r\n"
-        "\r\n"
-        "SAQLA BOT ACTIVE"
+    server = await asyncio.start_server(
+        handle_client,
+        "0.0.0.0",
+        PORT
     )
-    writer.write(response.encode())
-    await writer.drain()
-finally:
-    writer.close()
-    await writer.wait_closed()
 
-==============================
+    logger.info("Health server PORT %s da ishga tushdi", PORT)
 
-MAIN
+    async with server:
+        await server.serve_forever()
 
-==============================
+
+# ==============================
+# BOTNI ISHGA TUSHIRISH
+# ==============================
 
 async def main():
 
-server = await asyncio.start_server(
-    handle_http,
-    "0.0.0.0",
-    PORT
-)
-print("━━━━━━━━━━━━━━━━━━━━")
-print("SAQLA BOT IS RUNNING")
-print("HTTP SERVER:", PORT)
-print("DOWNLOAD ENGINE: READY")
-print("━━━━━━━━━━━━━━━━━━━━")
-async with server:
+    logger.info("SAQLA BOT ishga tushmoqda...")
+
     await asyncio.gather(
         dp.start_polling(bot),
-        server.serve_forever()
+        health_server()
     )
 
-if name == “main”:
 
-try:
-    asyncio.run(main())
-except KeyboardInterrupt:
-    print("SAQLA BOT STOPPED")
+if __name__ == "__main__":
+
+    try:
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        logger.info("Bot to'xtatildi.")
